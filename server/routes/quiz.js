@@ -6,15 +6,38 @@ dotenv.config();
 
 const router = express.Router();
 
+// Add retry configuration
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 2000;
+
+// Helper function to delay execution
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 if (!process.env.GEMINI_API_KEY) {
   console.error("Missing GEMINI_API_KEY in environment variables");
   process.exit(1);
 }
 
 try {
-  // Initialize Gemini AI
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+  const model = genAI.getGenerativeModel({
+    model: "gemini-2.5-flash-preview-04-17",
+  });
+
+  // Add generateWithRetry function
+  const generateWithRetry = async (prompt, retries = MAX_RETRIES) => {
+    try {
+      const result = await model.generateContent(prompt);
+      return result;
+    } catch (error) {
+      if (error.status === 503 && retries > 0) {
+        console.log(`Retrying... ${retries} attempts remaining`);
+        await delay(RETRY_DELAY);
+        return generateWithRetry(prompt, retries - 1);
+      }
+      throw error;
+    }
+  };
 
   router.post("/generate-quiz", async (req, res) => {
     try {
@@ -24,34 +47,35 @@ try {
         return res.status(400).json({ message: "Role is required" });
       }
 
-      const quizPrompt = `Generate 10 multiple choice questions about ${role}. 
+      const quizPrompt = `Generate 10 multiple choice questions about ${role}.
       Format each question exactly like this:
-      Question: [question text]
-      A) [option A]
-      B) [option B]
-      C) [option C]
-      D) [option D]
+     1. Question: [question text]
+A) [option text]
+B) [option text]
+C) [option text]
+D) [option text]
+Correct Answer: [letter]
       Correct Answer: [letter]
 
       Return all questions in a clear, numbered format.`;
 
-      const quizResult = await model.generateContent(quizPrompt);
+      console.log("Sending prompt to Gemini...");
+      const result = await generateWithRetry(quizPrompt);
+      const response = await result.response;
+      const text = response.text();
 
-      if (!quizResult || !quizResult.response) {
-        throw new Error("No response from AI model");
-      }
-
-      const text = quizResult.response.text();
-      console.log("Quiz Generation:", text);
-
-      res.json({ success: true, data: text });
+      res.json({
+        success: true,
+        data: {
+          text: text,
+          role: role,
+        },
+      });
     } catch (error) {
-      console.error("API Error Details:", error);
-      res.status(500).json({
-        message: "Quiz generation failed",
+      console.error("Quiz Generation Error:", error);
+      res.status(error.status || 500).json({
+        success: false,
         error: error.message,
-        details:
-          process.env.NODE_ENV === "development" ? error.toString() : undefined,
       });
     }
   });

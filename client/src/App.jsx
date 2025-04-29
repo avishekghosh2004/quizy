@@ -9,36 +9,119 @@ function App() {
   const [currentAnswers, setCurrentAnswers] = useState({});
   const [showResults, setShowResults] = useState(false);
   const [score, setScore] = useState(0);
+  const [reviewing, setReviewing] = useState(false);
+
+  const parseQuestions = (responseData) => {
+    if (!responseData?.data?.text) {
+      throw new Error("Invalid response format");
+    }
+
+    const text = responseData.data.text;
+    console.log("Raw response:", text);
+
+    // Remove introduction text and split questions more reliably
+    const cleanedText = text.replace(/^.*?(?=1\.\s*Question:)/s, "");
+    const questionBlocks = cleanedText
+      .split(/(?=(?:^|\n)\d{1,2}\.\s*Question:)/m) // Updated regex pattern
+      .filter((block) => block.trim())
+      .map((block) => block.trim());
+
+    console.log("Cleaned question blocks:", questionBlocks);
+
+    return questionBlocks.map((block, index) => {
+      const lines = block
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line);
+
+      // Find question line with improved matching
+      const questionLine = lines.find((line) =>
+        line.match(/^\d{1,2}\.\s*Question:/i)
+      );
+
+      if (!questionLine) {
+        console.log(`Block ${index + 1} content:`, block);
+        throw new Error(`Question ${index + 1} is missing question text`);
+      }
+
+      const question = questionLine
+        .replace(/^\d{1,2}\.\s*Question:\s*/i, "")
+        .trim();
+
+      // Parse options with improved matching
+      const options = {};
+      lines.forEach((line) => {
+        // More flexible option matching
+        const optionMatch = line.match(/^([A-D])\)\s*(.+)$/);
+        if (optionMatch) {
+          const [_, letter, text] = optionMatch;
+          options[letter] = text.trim();
+        }
+      });
+
+      // Validate all options are present
+      const requiredOptions = ["A", "B", "C", "D"];
+      const missingOptions = requiredOptions.filter((opt) => !options[opt]);
+
+      if (missingOptions.length > 0) {
+        console.log(`Question ${index + 1} found options:`, options);
+        throw new Error(
+          `Question ${index + 1} is missing options: ${missingOptions.join(
+            ", "
+          )}`
+        );
+      }
+
+      // Extract answer
+      const answerLine = lines.find((line) =>
+        line.toLowerCase().includes("correct answer:")
+      );
+
+      if (!answerLine) {
+        throw new Error(`Question ${index + 1} is missing the correct answer`);
+      }
+
+      const answer = answerLine
+        .replace(/^correct answer:\s*/i, "")
+        .trim()
+        .toUpperCase();
+
+      return {
+        id: index + 1,
+        question,
+        options,
+        answer,
+      };
+    });
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!role.trim()) {
-      setError("Please enter a role");
-      return;
-    }
-    setError("");
     setLoading(true);
-    setShowResults(false);
-    setCurrentAnswers({});
+    setError(null);
 
     try {
-      const res = await axios.post("http://localhost:5000/api/generate-quiz", {
-        role: role.trim(),
-      });
-
-      if (!res.data || !res.data.success) {
-        throw new Error("Invalid response format");
+      if (!role.trim()) {
+        throw new Error("Please enter a role");
       }
 
-      const parsedQuestions = parseQuestions(res.data.data);
-      setQuestions(parsedQuestions);
-    } catch (error) {
-      console.error("Quiz generation error:", error);
-      setError(
-        error.response?.data?.message ||
-          error.message ||
-          "Failed to generate quiz"
+      const response = await axios.post(
+        "http://localhost:5000/api/generate-quiz",
+        {
+          role: role,
+        }
       );
+
+      try {
+        const parsedQuestions = parseQuestions(response.data);
+        setQuestions(parsedQuestions);
+      } catch (parseError) {
+        console.error("Parsing error:", parseError);
+        throw new Error(`Failed to parse questions: ${parseError.message}`);
+      }
+    } catch (error) {
+      setError(error.message || "An unexpected error occurred");
+      setQuestions([]);
     } finally {
       setLoading(false);
     }
@@ -63,6 +146,11 @@ function App() {
 
     setScore(correctAnswers);
     setShowResults(true);
+  };
+
+  const handleReviewAnswers = () => {
+    setReviewing(true);
+    setShowResults(false);
   };
 
   return (
@@ -203,15 +291,89 @@ function App() {
                   </span>
                 </div>
                 <button
-                  onClick={() => {
-                    setShowResults(false);
-                    setCurrentAnswers({});
-                  }}
+                  onClick={handleReviewAnswers}
                   className="w-full py-4 px-6 bg-blue-600 hover:bg-blue-500 rounded-xl font-medium
                     transition-all duration-300 shadow-lg shadow-blue-500/0 hover:shadow-blue-500/10"
                 >
                   Review Answers
                 </button>
+              </div>
+            )}
+
+            {reviewing && (
+              <div className="space-y-6">
+                {questions.map((q, i) => (
+                  <div
+                    key={i}
+                    className={`bg-zinc-900/30 rounded-xl p-6 border 
+                      ${
+                        currentAnswers[i] === q.answer
+                          ? "border-green-500/30"
+                          : "border-red-500/30"
+                      }`}
+                  >
+                    <p className="text-xl font-semibold mb-4 text-zinc-100">
+                      {i + 1}. {q.question}
+                    </p>
+                    <div className="space-y-3">
+                      {Object.entries(q.options).map(([key, value]) => (
+                        <div
+                          key={key}
+                          className={`p-4 rounded-xl 
+                            ${
+                              key === q.answer
+                                ? "bg-green-500/10 border border-green-500/30"
+                                : currentAnswers[i] === key &&
+                                  currentAnswers[i] !== q.answer
+                                ? "bg-red-500/10 border border-red-500/30"
+                                : "bg-zinc-900/50"
+                            }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="text-zinc-300 text-lg">
+                              {key}) {value}
+                            </span>
+                            {key === q.answer && (
+                              <span className="text-green-400 text-sm font-medium">
+                                Correct Answer
+                              </span>
+                            )}
+                            {currentAnswers[i] === key && key !== q.answer && (
+                              <span className="text-red-400 text-sm font-medium">
+                                Your Answer
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+                <div className="flex space-x-4">
+                  <button
+                    onClick={() => {
+                      setReviewing(false);
+                      setShowResults(true);
+                    }}
+                    className="w-1/2 py-4 px-6 bg-blue-600 hover:bg-blue-500 rounded-xl font-medium
+                      transition-all duration-300 shadow-lg shadow-blue-500/0 hover:shadow-blue-500/10"
+                  >
+                    Back to Results
+                  </button>
+                  <button
+                    onClick={() => {
+                      setReviewing(false);
+                      setShowResults(false);
+                      setCurrentAnswers({});
+                      setQuestions([]);
+                      setRole("");
+                    }}
+                    className="w-1/2 py-4 px-6 bg-green-600 hover:bg-green-500 rounded-xl font-medium
+                      transition-all duration-300 shadow-lg shadow-green-500/0 hover:shadow-green-500/10"
+                  >
+                    New Quiz
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -230,41 +392,6 @@ function App() {
       </footer>
     </div>
   );
-}
-
-function parseQuestions(text) {
-  const questions = [];
-  const questionBlocks = text.split(/\d+\./).filter((block) => block.trim());
-
-  questionBlocks.forEach((block) => {
-    const lines = block.trim().split("\n");
-    const questionLine = lines
-      .find((line) => line.includes("Question:"))
-      ?.replace("Question:", "")
-      .trim();
-    const options = {};
-    let answer = "";
-
-    lines.forEach((line) => {
-      const optionMatch = line.match(/([A-D])\)(.*)/);
-      if (optionMatch) {
-        options[optionMatch[1]] = optionMatch[2].trim();
-      }
-      if (line.toLowerCase().includes("correct answer:")) {
-        answer = line.match(/[A-D]/)?.[0] || "";
-      }
-    });
-
-    if (questionLine && Object.keys(options).length === 4 && answer) {
-      questions.push({
-        question: questionLine,
-        options,
-        answer,
-      });
-    }
-  });
-
-  return questions;
 }
 
 export default App;
