@@ -106,7 +106,7 @@ function App() {
       }
 
       const response = await axios.post(
-        "https://quizy-dn75.onrender.com",
+        "http://localhost:5000/api/generate-quiz",
         {
           role: role,
         }
